@@ -3,7 +3,7 @@
 `pr-glance` gives you a quick, readable status report for a public GitHub pull request. It shows the merge state, latest reviews, changed files, and check runs without opening several tabs.
 
 ```sh
-npx pr-glance https://github.com/owner/repo/pull/123
+npx github:muhammetozkoc/pr-glance https://github.com/owner/repo/pull/123
 ```
 
 For local use:
