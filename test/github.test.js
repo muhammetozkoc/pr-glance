@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { formatReport, inspectPullRequest, parsePullRequestUrl } from "../src/github.js";
+import {
+  exitCodeFor,
+  formatReport,
+  getVerdict,
+  inspectPullRequest,
+  parsePullRequestUrl,
+} from "../src/github.js";
 
 test("parses a GitHub pull request URL", () => {
   assert.deepEqual(parsePullRequestUrl("https://github.com/pacifio/atlas/pull/183"), {
@@ -18,8 +24,19 @@ test("rejects unrelated URLs", () => {
   );
 });
 
-test("fetches and summarizes pull request data", async () => {
-  const responses = new Map([
+function fakeFetch(responses) {
+  return async (input) => {
+    const url = new URL(input);
+    const body = responses.get(`${url.pathname}${url.search}`);
+    return new Response(JSON.stringify(body ?? { message: "Not Found" }), {
+      status: body === undefined ? 404 : 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+}
+
+function apiResponses({ workflowRuns = [], checkRuns = [], statuses = [] } = {}) {
+  return new Map([
     [
       "/repos/acme/widget/pulls/7",
       {
@@ -28,6 +45,7 @@ test("fetches and summarizes pull request data", async () => {
         user: { login: "ada" },
         draft: false,
         state: "open",
+        merged: false,
         mergeable: true,
         mergeable_state: "clean",
         changed_files: 2,
@@ -41,32 +59,50 @@ test("fetches and summarizes pull request data", async () => {
         { user: { login: "linus" }, state: "APPROVED" },
       ],
     ],
-    [
-      "/repos/acme/widget/commits/abc123/check-runs?per_page=100",
-      {
-        check_runs: [
-          { name: "test", status: "completed", conclusion: "success" },
-          { name: "lint", status: "in_progress", conclusion: null },
-        ],
-      },
-    ],
+    ["/repos/acme/widget/commits/abc123/check-runs?per_page=100", { check_runs: checkRuns }],
+    ["/repos/acme/widget/commits/abc123/status?per_page=100", { statuses }],
+    ["/repos/acme/widget/actions/runs?head_sha=abc123&per_page=100", { workflow_runs: workflowRuns }],
   ]);
+}
 
-  const fetchImpl = async (input) => {
-    const url = new URL(input);
-    const body = responses.get(`${url.pathname}${url.search}`);
-    return new Response(JSON.stringify(body), {
-      status: body === undefined ? 404 : 200,
-      headers: { "content-type": "application/json" },
-    });
-  };
-
+test("marks a clean pull request as ready", async () => {
   const report = await inspectPullRequest("https://github.com/acme/widget/pull/7", {
-    fetchImpl,
+    fetchImpl: fakeFetch(apiResponses()),
   });
 
+  assert.equal(report.verdict.status, "ready");
   assert.deepEqual(report.reviews.approved, ["linus"]);
-  assert.deepEqual(report.reviews.changesRequested, []);
-  assert.equal(report.checks.pending, 1);
-  assert.match(formatReport(report), /Mergeable: yes \(clean\)/);
+  assert.equal(exitCodeFor(report), 0);
+  assert.match(formatReport(report), /^READY  acme\/widget#7/);
+});
+
+test("shows workflows that need maintainer approval", async () => {
+  const report = await inspectPullRequest("https://github.com/acme/widget/pull/7", {
+    fetchImpl: fakeFetch(
+      apiResponses({
+        workflowRuns: [{ name: "CI", status: "completed", conclusion: "action_required" }],
+      }),
+    ),
+  });
+
+  assert.equal(report.verdict.status, "waiting");
+  assert.deepEqual(report.workflows.actionRequired, ["CI"]);
+  assert.match(formatReport(report), /workflow approval needed: CI/);
+  assert.equal(exitCodeFor(report), 2);
+});
+
+test("marks failed checks as blocked", () => {
+  const report = {
+    state: "open",
+    merged: false,
+    draft: false,
+    mergeable: true,
+    mergeableState: "unstable",
+    reviews: { approved: [], changesRequested: [] },
+    checks: { total: 1, pending: [], failed: ["test"] },
+    statuses: { total: 0, pending: [], failed: [] },
+    workflows: { total: 0, pending: [], actionRequired: [], failed: [] },
+  };
+
+  assert.deepEqual(getVerdict(report), { status: "blocked", reasons: ["failed: test"] });
 });
