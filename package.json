@@ -1,0 +1,17 @@
+{
+  "name": "pr-glance",
+  "version": "0.1.0",
+  "description": "A small CLI for checking whether a GitHub pull request is ready to merge.",
+  "type": "module",
+  "bin": {
+    "pr-glance": "src/cli.js"
+  },
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check src/cli.js && node --check src/github.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}
